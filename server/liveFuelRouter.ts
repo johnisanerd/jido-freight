@@ -62,7 +62,7 @@ function getMockPrices(location: string, radiusMiles: number): FuelPrice[] {
 export const liveFuelRouter = router({
   /**
    * Fetch live fuel prices for a location.
-   * Uses Apify GasBuddy scraper when configured, falls back to mock data.
+   * Uses Apify fuel prices scraper when configured, falls back to mock data.
    */
   fetchPrices: publicProcedure
     .input(
@@ -126,16 +126,15 @@ async function scrapeWithApify(
   radiusMiles: number,
   apiToken: string
 ): Promise<FuelPrice[]> {
-  // Apify GasBuddy actor — uses the "drobnikj/gasbuddy" actor
+  // Apify fuel prices actor — uses the "johnvc/fuelprices" actor
   const response = await fetch(
-    `https://api.apify.com/v2/acts/drobnikj~gasbuddy/runs?token=${apiToken}`,
+    `https://api.apify.com/v2/acts/johnvc~fuelprices/runs?token=${apiToken}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         search: location,
-        maxResults: 20,
-        radius: radiusMiles,
+        fuel: 4, // diesel
       }),
     }
   );
@@ -149,7 +148,7 @@ async function scrapeWithApify(
   if (!runId) throw new Error("No run ID from Apify");
 
   // Poll for results
-  const resultUrl = `https://api.apify.com/v2/acts/drobnikj~gasbuddy/runs/${runId}/dataset/items?token=${apiToken}`;
+  const resultUrl = `https://api.apify.com/v2/actor-runs/${runId}/dataset/items?token=${apiToken}`;
   let attempts = 0;
   while (attempts < 20) {
     await new Promise((r) => setTimeout(r, 3000));
@@ -157,16 +156,16 @@ async function scrapeWithApify(
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
-        return data.map((item: any) => ({
+        return data.filter((item: any) => item.distance == null || item.distance <= radiusMiles).map((item: any) => ({
           stationName: item.stationName || item.name || "Unknown Station",
-          address: item.address || "",
-          dieselPrice: parseFloat(item.dieselPrice || item.price || 0),
+          address: item.address || [item.address_line1, item.address_locality, item.address_region].filter(Boolean).join(", "),
+          dieselPrice: parseFloat(item.dieselPrice || item.price || item.price_credit || item.price_cash || 0),
           defPrice: item.defPrice ? parseFloat(item.defPrice) : undefined,
           latitude: item.latitude ? parseFloat(item.latitude) : undefined,
           longitude: item.longitude ? parseFloat(item.longitude) : undefined,
-          lastUpdated: item.lastUpdated || new Date().toISOString(),
+          lastUpdated: item.lastUpdated || item.price_credit_postedTime || item.price_cash_postedTime || new Date().toISOString(),
           chain: item.chain || undefined,
-        }));
+        })).filter((p: FuelPrice) => p.dieselPrice > 0);
       }
     }
     attempts++;
